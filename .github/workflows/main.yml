@@ -1,0 +1,43 @@
+name: Daily Macro Quant System
+
+# 設定觸發條件
+on:
+  schedule:
+    # 這裡使用的是 UTC 時間。台灣時間(UTC+8)的早上 7:00，等於 UTC 的前一天 23:00。
+    # 格式：分 時 日 月 星期 (每天台灣時間早上 7:00 執行)
+    - cron: '0 23 * * *' 
+  
+  workflow_dispatch: # 加入這個可以讓你在 GitHub 網頁上手動點擊執行測試
+
+jobs:
+  run-matlab-script:
+    runs-on: ubuntu-latest # 使用免費的 Linux 虛擬機
+
+    steps:
+      # 1. 將你的程式碼下載到虛擬機
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # 2. 透過 MathWorks 官方 Action 安裝 MATLAB 環境
+      - name: Setup MATLAB
+        uses: matlab-actions/setup-matlab@v2
+
+      # 3. 執行你的 MATLAB 主程式，並把 Secrets 注入環境變數
+      - name: Run Quant System
+        env:
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          GEMINI_API_KEY_4: ${{ secrets.GEMINI_API_KEY_4 }}
+          GEMINI_API_KEY_5: ${{ secrets.GEMINI_API_KEY_5 }}
+          GEMINI_API_KEY_6: ${{ secrets.GEMINI_API_KEY_6 }}
+          GEMINI_API_KEY_7: ${{ secrets.GEMINI_API_KEY_7 }}
+          GEMINI_API_KEY_8: ${{ secrets.GEMINI_API_KEY_8 }}
+          GEMINI_API_KEY_9: ${{ secrets.GEMINI_API_KEY_9 }}
+          GEMINI_API_KEY_10: ${{ secrets.GEMINI_API_KEY_10 }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_PWD: ${{ secrets.GMAIL_PWD }}
+          GMAIL_RECEIVER: ${{ secrets.GMAIL_RECEIVER }}
+        uses: matlab-actions/run-command@v2
+        with:
+          command: Automated_Macro_Quant_System
