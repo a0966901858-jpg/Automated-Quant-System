@@ -1,6 +1,6 @@
 % =========================================================================
 % 自動化總經與量化交易日報系統 (Automated_Macro_Quant_System.m)
-% 整合專案：爬蟲資料庫 + 均值回歸配對(S&P500 vs 台股) + Gemini API (極簡晨報/多金鑰) + GitHub Actions
+% 整合專案：爬蟲資料庫 + 均值回歸配對(S&P500 vs 台股) + Gemini API (含漲跌幅晨報) + GitHub Actions
 % =========================================================================
 
 function Automated_Macro_Quant_System()
@@ -9,7 +9,7 @@ function Automated_Macro_Quant_System()
         fprintf('[%s] 系統啟動，開始執行每日量化與總經資料更新...\n', datestr(now));
         
         %% 參數設定區 (讀取 GitHub Secrets 環境變數，確保資安)
-        gemini_api_keys = {
+           gemini_api_keys = {
             getenv('GEMINI_API_KEY_1'), ...
             getenv('GEMINI_API_KEY_2'), ...
             getenv('GEMINI_API_KEY_3'), ...
@@ -32,10 +32,9 @@ function Automated_Macro_Quant_System()
         sender_pwd = getenv('GMAIL_PWD');           
         receiver_email = getenv('GMAIL_RECEIVER');  
         
-        %% Phase 1: 總體經濟與大盤數據爬蟲
+        %% Phase 1: 總體經濟與大盤數據爬蟲 (新增計算漲跌幅)
         fprintf('正在爬取全球總經與市場數據...\n');
         
-        % 定義欲爬取的 Yahoo Finance 標的、對應的英文鍵值與中文名稱
         tickers = {'^TWII', '^GSPC', '^IXIC', 'GC=F', 'BTC-USD', 'CL=F', '^TNX'};
         field_keys = {'TWII', 'SP500', 'NASDAQ', 'Gold', 'BTC', 'Oil', 'US10Y'}; 
         names = {'台灣加權指數', '標普500指數', '納斯達克指數', '黃金價格', '比特幣', '國際原油', '美10年期公債殖利率'};
@@ -45,8 +44,18 @@ function Automated_Macro_Quant_System()
         
         for i = 1:length(tickers)
             [~, prices, last_price] = fetch_yahoo_data(tickers{i}, start_dt);
-            market_data.(field_keys{i}) = struct('Prices', prices, 'Last', last_price);
-            fprintf(' - %s 更新完成 (最新報價: %.2f)\n', names{i}, last_price);
+            
+            % 計算當日漲跌幅 (%)
+            if length(prices) >= 2
+                % 對於公債殖利率，通常看絕對基點變化，但為了版面統一，這裡皆計算相對百分比變化
+                change_pct = ((prices(end) - prices(end-1)) / prices(end-1)) * 100;
+            else
+                change_pct = 0;
+            end
+            
+            % 將報價與漲跌幅存入資料庫
+            market_data.(field_keys{i}) = struct('Prices', prices, 'Last', last_price, 'ChangePct', change_pct);
+            fprintf(' - %s 更新完成 (最新報價: %.2f, 漲跌幅: %+.2f%%)\n', names{i}, last_price, change_pct);
         end
         
         % 國際大事爬蟲 
@@ -56,20 +65,16 @@ function Automated_Macro_Quant_System()
         %% Phase 2: 均值回歸與配對分析 (以標普500 vs 台灣加權指數為例)
         fprintf('進行大盤指數之斯皮爾曼相關性與 Z-Score 檢定...\n');
         
-        % 讀取 S&P500 與 台股大盤 (TWII)
         p_sp500 = market_data.SP500.Prices;
         p_twii = market_data.TWII.Prices;
         
-        % 對齊資料長度 (確保兩者交易日對齊)
         min_len = min(length(p_sp500), length(p_twii));
         p_sp500 = p_sp500(end-min_len+1:end);
         p_twii = p_twii(end-min_len+1:end);
         
-        % 計算報酬率
         ret_sp500 = diff(p_sp500) ./ p_sp500(1:end-1);
         ret_twii = diff(p_twii) ./ p_twii(1:end-1);
         
-        % 動態 Beta 與 Z-Score 運算 (以 SP500 為基準 X，台股為標的 Y)
         logY = log(p_twii);
         logX = log(p_sp500);
         c = cov(logX, logY);
@@ -78,14 +83,15 @@ function Automated_Macro_Quant_System()
         spread = logY - current_beta * logX;
         z_score = (spread(end) - mean(spread)) / std(spread);
         
-        %% Phase 3: 呼叫 Gemini API 產出投資日報 (極簡晨報版)
+        %% Phase 3: 呼叫 Gemini API 產出投資日報 (極簡晨報版，加入漲跌幅)
         fprintf('正在呼叫 Gemini API 進行資訊整合...\n');
         
+        % %+.2f%% 的加號代表：如果是正數會強制顯示 '+' 號，負數自動帶 '-' 號，非常適合財經報價
         prompt = sprintf([...
             '你是一位專業且俐落的財經晨報主播。請根據以下最新數據與新聞，產出一份「一分鐘完讀」的快訊版晨報，語氣明快、精準、直接給結論。\n\n', ...
-            '【市場昨收報價】\n', ...
-            '台股: %.2f | 標普500: %.2f | 納斯達克: %.2f\n', ...
-            '黃金: %.2f | 比特幣: %.2f | 原油: %.2f | 美10年期公債殖利率: %.2f%%\n\n', ...
+            '【市場昨收報價與漲跌幅】\n', ...
+            '台股: %.2f (%+.2f%%) | 標普500: %.2f (%+.2f%%) | 納斯達克: %.2f (%+.2f%%)\n', ...
+            '黃金: %.2f (%+.2f%%) | 比特幣: %.2f (%+.2f%%) | 原油: %.2f (%+.2f%%) | 美10年期公債殖利率: %.2f (%+.2f%%)\n\n', ...
             '【配對訊號 (S&P 500 vs 台股加權指數)】\n', ...
             '價差 Z-Score: %.2f\n\n', ...
             '【國際財經大事】\n%s\n\n', ...
@@ -94,11 +100,15 @@ function Automated_Macro_Quant_System()
             '2. 【資金前瞻】：根據「美債殖利率」與「大宗商品（金/油/幣）」的波動，一針見血指出對「美股」與「台股」板塊的潛在資金推力或壓力。\n', ...
             '3. 【量化定調】：結合 Z-Score 數值 (大於 2 代表台股相對美股溢價，小於 -2 代表相對折價)，給出今日極簡的部位操作提示。\n', ...
             '4. 【格式限制】：總字數嚴格控制在 250 字以內。全程採用條列式（Bullet points），拒絕冗長的背景解釋，只講結論與重點。'], ...
-            market_data.TWII.Last, market_data.SP500.Last, market_data.NASDAQ.Last, ...
-            market_data.Gold.Last, market_data.BTC.Last, market_data.Oil.Last, market_data.US10Y.Last, ...
+            market_data.TWII.Last, market_data.TWII.ChangePct, ...
+            market_data.SP500.Last, market_data.SP500.ChangePct, ...
+            market_data.NASDAQ.Last, market_data.NASDAQ.ChangePct, ...
+            market_data.Gold.Last, market_data.Gold.ChangePct, ...
+            market_data.BTC.Last, market_data.BTC.ChangePct, ...
+            market_data.Oil.Last, market_data.Oil.ChangePct, ...
+            market_data.US10Y.Last, market_data.US10Y.ChangePct, ...
             z_score, news_headlines);
             
-        % 傳入金鑰陣列，啟動防封鎖輪替機制
         report_content = call_gemini_api_with_rotation(prompt, gemini_api_keys);
         fprintf('\n=== Gemini 報告生成成功 ===\n');
         
@@ -206,7 +216,6 @@ end
 
 % 4. 寄送 Gmail
 function send_report_to_gmail(sender_email, sender_pwd, receiver_email, report_text)
-    % 防呆：檢查信箱與密碼是否有確實從環境變數讀取到
     if isempty(sender_email) || isempty(sender_pwd) || isempty(receiver_email)
         fprintf('Email 寄送失敗: 環境變數 (Secrets) 未正確讀取，請檢查 GitHub 設定。\n');
         return;
