@@ -218,7 +218,7 @@ function report_text = call_gemini_api_with_rotation(prompt, api_keys)
         end
         
         current_key = api_keys{currentKeyIdx}; 
-        url = sprintf('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s', current_key); 
+        url = sprintf('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s', current_key); 
         payload = struct('contents', struct('parts', struct('text', prompt))); 
         options = weboptions('MediaType', 'application/json', 'Timeout', 45, 'RequestMethod', 'post'); 
         
