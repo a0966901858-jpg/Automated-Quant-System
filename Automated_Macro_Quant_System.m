@@ -1,6 +1,6 @@
 % =========================================================================
 % 自動化總經與量化交易日報系統 (Automated_Macro_Quant_System.m)
-% 整合專案：爬蟲資料庫 + 均值回歸配對 + Gemini API (防跑版排版+本土籌碼) + GitHub Actions
+% 整合專案：爬蟲資料庫 + 均值回歸配對 + Gemini API (維度防錯防跑版) + GitHub Actions
 % =========================================================================
 
 function Automated_Macro_Quant_System()
@@ -9,7 +9,7 @@ function Automated_Macro_Quant_System()
         fprintf('[%s] 系統啟動，開始執行每日量化與總經資料更新...\n', datestr(now));
         
         %% 參數設定區
-             gemini_api_keys = {
+        gemini_api_keys = {
             getenv('GEMINI_API_KEY_1'), ...
             getenv('GEMINI_API_KEY_2'), ...
             getenv('GEMINI_API_KEY_3'), ...
@@ -21,6 +21,7 @@ function Automated_Macro_Quant_System()
             getenv('GEMINI_API_KEY_9'), ...
             getenv('GEMINI_API_KEY_10')
         }; 
+        
         gemini_api_keys = gemini_api_keys(~cellfun(@isempty, gemini_api_keys));
         if isempty(gemini_api_keys)
             error('未偵測到任何 Gemini API Key，請檢查 GitHub Secrets 設定。');
@@ -55,7 +56,7 @@ function Automated_Macro_Quant_System()
             fprintf(' - %s 更新完成 (最新報價: %.2f, 漲跌幅: %+.2f%%)\n', names{i}, last_price, change_pct);
         end
         
-        % 額外抓取本土籌碼與情緒數據 (透過下方獨立爬蟲函數)
+        % 額外抓取本土籌碼與情緒數據
         fprintf('正在抓取台股本土籌碼與情緒數據...\n');
         tw_vix_val = fetch_taiwan_vix();
         tw_margin_val = fetch_twse_margin_balance();
@@ -87,7 +88,7 @@ function Automated_Macro_Quant_System()
         %% Phase 3: 建立「程式驅動表頭」與呼叫 Gemini API
         fprintf('正在呼叫 Gemini API 進行資訊整合...\n');
         
-       % 1. 由程式直接生成 100% 準確的一行一列報價表頭
+        % 1. 由程式直接生成 100% 準確的一行一列報價表頭
         market_header = sprintf([...
             '========================================================\n', ...
             '📊【程式自動追蹤 - 全球市場與風險指標】\n', ...
@@ -96,12 +97,10 @@ function Automated_Macro_Quant_System()
             '台股 VIX : %8.2f\n', ...
             '台股加權 : %8.2f (%+.2f%%)\n', ...
             '融資餘額 : %8.2f 億\n', ...
-
             '標普 500 : %8.2f (%+.2f%%)\n', ...
             '納斯達克 : %8.2f (%+.2f%%)\n', ...
             '道瓊工業 : %8.2f (%+.2f%%)\n', ...
             '費城半導 : %8.2f (%+.2f%%)\n', ...
-            
             '美10Y公債: %8.2f (%+.2f%%)\n', ...
             '比 特 幣 : %8.2f (%+.2f%%)\n', ...
             '黃金價格 : %8.2f (%+.2f%%)\n', ...
@@ -151,7 +150,9 @@ function Automated_Macro_Quant_System()
         fprintf('\n=== Gemini 報告生成成功 ===\n');
         
         %% Phase 4: 組合並發送 Gmail
-        final_report = [market_header, report_content];
+        % 【維度防呆機制】: 將 API回傳內容強制轉型字串並用換行符合併，避免 MATLAB 發生矩陣維度不匹配的錯誤
+        report_str = strjoin(string(report_content), char(10));
+        final_report = char(string(market_header) + report_str);
         
         fprintf('正在透過 Gmail 發送日報...\n');
         send_report_to_gmail(sender_email, sender_pwd, receiver_email, final_report);
@@ -239,12 +240,14 @@ function headlines = fetch_financial_news()
         options = weboptions('Timeout', 15);
         rss_data = webread(rss_url, options);
         
-        headlines = '';
+        % 【維度防呆機制】: 採用字串加法取代陣列串接
+        headlines_str = "";
         items = rss_data.channel.item;
         num_items = min(3, length(items));
         for i = 1:num_items
-            headlines = [headlines, '- ', items(i).title, char(10)];
+            headlines_str = headlines_str + "- " + string(items(i).title) + char(10);
         end
+        headlines = char(headlines_str);
     catch
         headlines = '- 無法取得最新國際新聞。';
     end
