@@ -85,7 +85,7 @@ function Automated_Macro_Quant_System()
             % 執行約翰森檢定
             [~,~,~,~,mles] = jcitest(Y, 'Display', 'off');
             
-            % 【防彈修復】統一轉為 Struct 並動態尋找特徵向量欄位
+            % 統一轉為 Struct 以便處理
             if istable(mles)
                 mles_struct = table2struct(mles);
             else
@@ -93,22 +93,39 @@ function Automated_Macro_Quant_System()
             end
             
             fnames = fieldnames(mles_struct);
-            % 搜尋包含 'Vec' 的欄位 (涵蓋 eigVec, EVec, Eigenvectors 等所有版本命名)
-            evec_idx = contains(fnames, 'Vec', 'IgnoreCase', true);
             
-            if any(evec_idx)
-                % 取得真正的欄位名稱
-                evec_field = fnames{evec_idx}; 
-                % 提取 r=1 (index=2) 的特徵向量矩陣
-                cv_matrix = mles_struct(2).(evec_field);
+            % 依序尋找可能的特徵向量或共整合欄位 (無差別大小寫比對，涵蓋所有 MATLAB 版本)
+            possible_fields = {'Eigenvectors', 'eigVec', 'EVec', 'Cointegration', 'beta'};
+            target_field = '';
+            
+            for k = 1:length(possible_fields)
+                idx = strcmpi(fnames, possible_fields{k});
+                if any(idx)
+                    target_field = fnames{idx}; % 取得精確的大/小寫欄位名
+                    break;
+                end
+            end
+            
+            if ~isempty(target_field)
+                % 取出 r=1 (通常在 index=2) 的特徵向量
+                cv_val = mles_struct(2).(target_field);
                 
-                % 提取第一組共整合向量 (Cointegrating Vector)
+                % 防呆機制：如果矩陣被 MATLAB 包裝成 Cell 陣列，將其解開
+                if iscell(cv_val)
+                    cv_matrix = cv_val{1};
+                else
+                    cv_matrix = cv_val;
+                end
+                
+                % 提取第一組共整合向量
                 cv = cv_matrix(:,1);
                 
                 % 正規化：以台股係數作為基準
                 cv = cv / cv(2); 
                 spread = Y * cv;
             else
+                % 萬一真的找不到，把真實欄位印在 Log 中方便我們精準抓蟲
+                fprintf('目前檢定結果可用的欄位有: %s\n', strjoin(fnames, ', '));
                 error('無法在檢定結果中找到特徵向量 (Eigenvector) 欄位');
             end
             
