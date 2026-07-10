@@ -234,16 +234,13 @@ function report_text = call_gemini_api_with_rotation(prompt, api_keys)
             cooldown = attempt * 2; 
             fprintf('冷卻 %d 秒後進行第 %d 次重試...\n', cooldown, attempt); 
             pause(cooldown); 
+            
             currentKeyIdx = mod(currentKeyIdx, length(api_keys)) + 1; 
             fprintf('已切換至備用金鑰 (Index: %d)，重新分析中...\n', currentKeyIdx);
         end
         
-        % 【關鍵修正 1】使用 strtrim 強制清除從 GitHub Secrets 讀取時夾帶的隱藏換行/空白符號
-        current_key = strtrim(api_keys{currentKeyIdx}); 
-        
-        % 【關鍵修正 2】升級使用最新穩定版的 gemini-2.0-flash 模型，避免舊版別名報錯 404
-        url = sprintf('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s', current_key); 
-        
+        current_key = api_keys{currentKeyIdx}; 
+        url = sprintf('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s', current_key); 
         payload = struct('contents', struct('parts', struct('text', prompt))); 
         options = weboptions('MediaType', 'application/json', 'Timeout', 45, 'RequestMethod', 'post'); 
         
