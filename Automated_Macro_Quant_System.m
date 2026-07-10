@@ -85,31 +85,35 @@ function Automated_Macro_Quant_System()
             % 執行約翰森檢定
             [~,~,~,~,mles] = jcitest(Y, 'Display', 'off');
             
-            % 【關鍵修復】智慧相容 MATLAB 新舊版本的 jcitest 輸出格式
+            % 【防彈修復】統一轉為 Struct 並動態尋找特徵向量欄位
             if istable(mles)
-                % 新版 (R2023a+) 預設回傳 Table，將其轉換為 Struct 陣列方便處理
                 mles_struct = table2struct(mles);
-                fnames = fieldnames(mles_struct);
-                
-                % 自動尋找特徵向量的欄位名稱 (新版可能叫 Eigenvectors，舊版叫 EVec)
-                evec_idx = contains(fnames, 'EVec', 'IgnoreCase', true) | contains(fnames, 'Eigenvector', 'IgnoreCase', true);
-                evec_field = fnames{evec_idx};
-                
-                % 提取 r=1 (index=2) 的特徵向量矩陣
-                cv_matrix = mles_struct(2).(evec_field);
             else
-                % 舊版 MATLAB 直接回傳 Struct 陣列
-                cv_matrix = mles(2).EVec;
+                mles_struct = mles;
             end
             
-            % 提取第一組共整合向量 (Cointegrating Vector)
-            cv = cv_matrix(:,1);
+            fnames = fieldnames(mles_struct);
+            % 搜尋包含 'Vec' 的欄位 (涵蓋 eigVec, EVec, Eigenvectors 等所有版本命名)
+            evec_idx = contains(fnames, 'Vec', 'IgnoreCase', true);
             
-            % 正規化：以台股係數作為基準
-            cv = cv / cv(2); 
-            spread = Y * cv;
+            if any(evec_idx)
+                % 取得真正的欄位名稱
+                evec_field = fnames{evec_idx}; 
+                % 提取 r=1 (index=2) 的特徵向量矩陣
+                cv_matrix = mles_struct(2).(evec_field);
+                
+                % 提取第一組共整合向量 (Cointegrating Vector)
+                cv = cv_matrix(:,1);
+                
+                % 正規化：以台股係數作為基準
+                cv = cv / cv(2); 
+                spread = Y * cv;
+            else
+                error('無法在檢定結果中找到特徵向量 (Eigenvector) 欄位');
+            end
+            
         catch ME
-            fprintf('約翰森檢定失敗，降級使用 OLS 回歸: %s\n', ME.message);
+            fprintf('約翰森檢定降級使用 OLS 回歸: %s\n', ME.message);
             c = cov(Y(:,1), Y(:,2));
             beta = c(1,2) / c(1,1);
             spread = Y(:,2) - beta * Y(:,1);
@@ -119,7 +123,7 @@ function Automated_Macro_Quant_System()
         z_score = (spread(end) - mean(spread)) / std(spread);
         
         % === 均值回歸機率計算 ===
-        % 利用常態分佈累積函數 (CDF) 將 Z-Score 轉化為極端偏差的「異常機率」
+        % 利用常態分佈累積函數 (CDF) 將 Z-Score 轉化為發生極端偏差的「異常機率」
         reversion_prob = (normcdf(abs(z_score)) - normcdf(-abs(z_score))) * 100;
         
         if z_score > 0
