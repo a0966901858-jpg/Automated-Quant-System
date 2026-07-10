@@ -69,48 +69,47 @@ function Automated_Macro_Quant_System()
             trend_block = trend_block + string(names{i}) + " 近20日價格: [" + string(trend_str) + "]" + char(10);
         end
         
-        %% Phase 2: 精準日期對齊與約翰森共整合檢定 (Johansen Test)
-        fprintf('進行精準日期對齊與約翰森共整合檢定 (S&P 500 vs 台股)...\n');
+        %% Phase 2: 約翰森共整合檢定 (Johansen Test) 與 Z-Score 機率分析
+        fprintf('進行約翰森共整合檢定 (S&P 500 vs 台股)...\n');
         
-        % 將 Unix 時間戳轉換為 MATLAB datetime 物件 (去除具體時分秒以利對齊)
-        t_sp500 = datetime(market_data.SP500.Timestamps, 'ConvertFrom', 'posixtime', 'TimeZone', 'local');
-        t_sp500.Hour = 0; t_sp500.Minute = 0; t_sp500.Second = 0;
+        p_sp500 = market_data.SP500.Prices;
+        p_twii = market_data.TWII.Prices;
         
-        t_twii = datetime(market_data.TWII.Timestamps, 'ConvertFrom', 'posixtime', 'TimeZone', 'local');
-        t_twii.Hour = 0; t_twii.Minute = 0; t_twii.Second = 0;
+        min_len = min(length(p_sp500), length(p_twii));
+        p_sp500 = p_sp500(end-min_len+1:end);
+        p_twii = p_twii(end-min_len+1:end);
         
-        % 建立時間表 (Timetable)
-        tt_sp500 = timetable(t_sp500, market_data.SP500.Prices, 'VariableNames', {'SP500'});
-        tt_twii = timetable(t_twii, market_data.TWII.Prices, 'VariableNames', {'TWII'});
-        
-        % 使用 synchronize 取交集，完美解決台灣與美國開休市日不同的問題
-        tt_aligned = synchronize(tt_sp500, tt_twii, 'intersection');
-        
-        % 使用花括號擴充 `{:, 'Var'}` 確保提取出純 numeric 矩陣，避免 table 屬性干擾後續計算
-        Y = [log(tt_aligned{:, 'SP500'}), log(tt_aligned{:, 'TWII'})];
+        Y = [log(p_sp500), log(p_twii)];
         
         try
             % 執行約翰森檢定
             [~,~,~,~,mles] = jcitest(Y, 'Display', 'off');
             
-            % 關鍵修正：兼容新舊版本 MATLAB 的 mles 返回格式 (相容 struct array 與 table)
+            % 【關鍵修復】智慧相容 MATLAB 新舊版本的 jcitest 輸出格式
             if istable(mles)
-                if iscell(mles.EVec)
-                    cv_all = mles.EVec{2}; % 新版 Table 格式包在 Cell 內
-                else
-                    cv_all = mles{2, 'EVec'}; % 一般 Table 矩陣格式
-                end
+                % 新版 (R2023a+) 預設回傳 Table，將其轉換為 Struct 陣列方便處理
+                mles_struct = table2struct(mles);
+                fnames = fieldnames(mles_struct);
+                
+                % 自動尋找特徵向量的欄位名稱 (新版可能叫 Eigenvectors，舊版叫 EVec)
+                evec_idx = contains(fnames, 'EVec', 'IgnoreCase', true) | contains(fnames, 'Eigenvector', 'IgnoreCase', true);
+                evec_field = fnames{evec_idx};
+                
+                % 提取 r=1 (index=2) 的特徵向量矩陣
+                cv_matrix = mles_struct(2).(evec_field);
             else
-                cv_all = mles(2).EVec; % 舊版傳統結構陣列格式
+                % 舊版 MATLAB 直接回傳 Struct 陣列
+                cv_matrix = mles(2).EVec;
             end
             
             % 提取第一組共整合向量 (Cointegrating Vector)
-            cv = cv_all(:,1);
+            cv = cv_matrix(:,1);
+            
             % 正規化：以台股係數作為基準
             cv = cv / cv(2); 
             spread = Y * cv;
         catch ME
-            fprintf('約翰森檢定失敗，降級使用 OLS 回歸。錯誤訊息: %s\n', ME.message);
+            fprintf('約翰森檢定失敗，降級使用 OLS 回歸: %s\n', ME.message);
             c = cov(Y(:,1), Y(:,2));
             beta = c(1,2) / c(1,1);
             spread = Y(:,2) - beta * Y(:,1);
@@ -120,6 +119,7 @@ function Automated_Macro_Quant_System()
         z_score = (spread(end) - mean(spread)) / std(spread);
         
         % === 均值回歸機率計算 ===
+        % 利用常態分佈累積函數 (CDF) 將 Z-Score 轉化為極端偏差的「異常機率」
         reversion_prob = (normcdf(abs(z_score)) - normcdf(-abs(z_score))) * 100;
         
         if z_score > 0
