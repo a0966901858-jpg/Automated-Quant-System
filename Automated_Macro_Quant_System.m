@@ -85,48 +85,72 @@ function Automated_Macro_Quant_System()
             % 執行約翰森檢定
             [~,~,~,~,mles] = jcitest(Y, 'Display', 'off');
             
-            % 統一轉為 Struct 以便處理
-            if istable(mles)
-                mles_struct = table2struct(mles);
+            cv = [];
+            
+            % 【終極防彈解包機制】
+            % 情況 1: 欄位被封裝在 'r1' (Rank 1) 的子結構中 (MATLAB 新版特性)
+            if istable(mles) && ismember('r1', mles.Properties.VariableNames)
+                r1_data = mles.r1;
+            elseif isstruct(mles) && isfield(mles, 'r1')
+                r1_data = mles.r1;
             else
-                mles_struct = mles;
+                r1_data = [];
             end
             
-            fnames = fieldnames(mles_struct);
-            
-            % 依序尋找可能的特徵向量或共整合欄位 (無差別大小寫比對，涵蓋所有 MATLAB 版本)
-            possible_fields = {'Eigenvectors', 'eigVec', 'EVec', 'Cointegration', 'beta'};
-            target_field = '';
-            
-            for k = 1:length(possible_fields)
-                idx = strcmpi(fnames, possible_fields{k});
-                if any(idx)
-                    target_field = fnames{idx}; % 取得精確的大/小寫欄位名
-                    break;
+            % 如果找到 r1，就鑽進去尋找 Beta 或 Eigenvector
+            if ~isempty(r1_data)
+                if iscell(r1_data), r1_data = r1_data{1}; end
+                if isstruct(r1_data)
+                    sub_fnames = fieldnames(r1_data);
+                    possible_fields = {'Eigenvectors', 'eigVec', 'EVec', 'beta', 'Beta', 'Cointegration'};
+                    for k = 1:length(possible_fields)
+                        idx = strcmpi(sub_fnames, possible_fields{k});
+                        if any(idx)
+                            cv_val = r1_data.(sub_fnames{idx});
+                            if iscell(cv_val), cv_val = cv_val{1}; end
+                            cv = cv_val(:,1);
+                            break;
+                        end
+                    end
                 end
             end
             
-            if ~isempty(target_field)
-                % 取出 r=1 (通常在 index=2) 的特徵向量
-                cv_val = mles_struct(2).(target_field);
-                
-                % 防呆機制：如果矩陣被 MATLAB 包裝成 Cell 陣列，將其解開
-                if iscell(cv_val)
-                    cv_matrix = cv_val{1};
+            % 情況 2: 傳統的 Struct Array 或以列 (Row) 為單位的 Table
+            if isempty(cv)
+                if istable(mles)
+                    mles_struct = table2struct(mles);
                 else
-                    cv_matrix = cv_val;
+                    mles_struct = mles;
                 end
                 
-                % 提取第一組共整合向量
-                cv = cv_matrix(:,1);
+                fnames = fieldnames(mles_struct);
+                possible_fields = {'Eigenvectors', 'eigVec', 'EVec', 'beta', 'Beta', 'Cointegration'};
                 
+                for k = 1:length(possible_fields)
+                    idx = strcmpi(fnames, possible_fields{k});
+                    if any(idx)
+                        target_field = fnames{idx}; 
+                        % r=1 通常在 index=2 (因為 index=1 是 r=0)
+                        if length(mles_struct) >= 2
+                            cv_val = mles_struct(2).(target_field);
+                        else
+                            cv_val = mles_struct(1).(target_field);
+                        end
+                        
+                        if iscell(cv_val), cv_val = cv_val{1}; end
+                        cv = cv_val(:,1);
+                        break;
+                    end
+                end
+            end
+            
+            if ~isempty(cv)
                 % 正規化：以台股係數作為基準
                 cv = cv / cv(2); 
                 spread = Y * cv;
+                fprintf(' - 約翰森檢定配對成功！\n');
             else
-                % 萬一真的找不到，把真實欄位印在 Log 中方便我們精準抓蟲
-                fprintf('目前檢定結果可用的欄位有: %s\n', strjoin(fnames, ', '));
-                error('無法在檢定結果中找到特徵向量 (Eigenvector) 欄位');
+                error('深入解包後仍找不到特徵向量 (Beta/Eigenvector) 欄位');
             end
             
         catch ME
