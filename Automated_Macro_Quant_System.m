@@ -6,15 +6,15 @@
 function Automated_Macro_Quant_System()
     try
         clc; clear; close all;
-        fprintf('[%s] 系統啟動，開始執行每日量化與總經資料更新...\n', datestr(now));
+        fprintf('[%s] 系統啟動，開始執行每日量化與總經資料更新...\n', string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss')));
         
         %% 參數設定區
-        gemini_api_keys = {
+        gemini_api_keys = { ...
             getenv('GEMINI_API_KEY_1'), getenv('GEMINI_API_KEY_2'), ...
             getenv('GEMINI_API_KEY_3'), getenv('GEMINI_API_KEY_4'), ...
             getenv('GEMINI_API_KEY_5'), getenv('GEMINI_API_KEY_6'), ...
             getenv('GEMINI_API_KEY_7'), getenv('GEMINI_API_KEY_8'), ...
-            getenv('GEMINI_API_KEY_9'), getenv('GEMINI_API_KEY_10')
+            getenv('GEMINI_API_KEY_9'), getenv('GEMINI_API_KEY_10') ...
         }; 
         
         gemini_api_keys = gemini_api_keys(~cellfun(@isempty, gemini_api_keys));
@@ -39,7 +39,11 @@ function Automated_Macro_Quant_System()
         trend_block = ""; % 用於提供給 LLM 的 20 日趨勢字串
         
         for i = 1:length(tickers)
-            [~, prices, last_price] = fetch_yahoo_data(tickers{i}, start_dt);
+            [timestamps, prices, last_price] = fetch_yahoo_data(tickers{i}, start_dt);
+            
+            if isempty(prices) || any(isnan(prices))
+                error('無法取得 %s (%s) 的市場數據。', names{i}, tickers{i});
+            end
             
             % 計算當日漲跌幅 (%)
             if length(prices) >= 2
@@ -57,35 +61,56 @@ function Automated_Macro_Quant_System()
             trend_str = sprintf('%.2f, ', prices_20d);
             trend_str = trend_str(1:end-2); % 移除最後的逗號
             
-            market_data.(field_keys{i}) = struct('Prices', prices, 'Last', last_price, 'ChangePct', change_pct, 'Trend20d', trend_str);
+            % 儲存結構（保留時間戳供後續精準對齊）
+            market_data.(field_keys{i}) = struct('Prices', prices, 'Timestamps', timestamps, 'Last', last_price, 'ChangePct', change_pct, 'Trend20d', trend_str);
             fprintf(' - %s 更新完成 (最新: %.2f, 漲跌幅: %+.2f%%)\n', names{i}, last_price, change_pct);
             
             % 疊加字串給 LLM
             trend_block = trend_block + string(names{i}) + " 近20日價格: [" + string(trend_str) + "]" + char(10);
         end
         
-        %% Phase 2: 約翰森共整合檢定 (Johansen Test) 與 Z-Score 機率分析
-        fprintf('進行約翰森共整合檢定 (S&P 500 vs 台股)...\n');
+        %% Phase 2: 精準日期對齊與約翰森共整合檢定 (Johansen Test)
+        fprintf('進行精準日期對齊與約翰森共整合檢定 (S&P 500 vs 台股)...\n');
         
-        p_sp500 = market_data.SP500.Prices;
-        p_twii = market_data.TWII.Prices;
+        % 將 Unix 時間戳轉換為 MATLAB datetime 物件 (去除具體時分秒以利對齊)
+        t_sp500 = datetime(market_data.SP500.Timestamps, 'ConvertFrom', 'posixtime', 'TimeZone', 'local');
+        t_sp500.Hour = 0; t_sp500.Minute = 0; t_sp500.Second = 0;
         
-        min_len = min(length(p_sp500), length(p_twii));
-        p_sp500 = p_sp500(end-min_len+1:end);
-        p_twii = p_twii(end-min_len+1:end);
+        t_twii = datetime(market_data.TWII.Timestamps, 'ConvertFrom', 'posixtime', 'TimeZone', 'local');
+        t_twii.Hour = 0; t_twii.Minute = 0; t_twii.Second = 0;
         
-        Y = [log(p_sp500), log(p_twii)];
+        % 建立時間表 (Timetable)
+        tt_sp500 = timetable(t_sp500, market_data.SP500.Prices, 'VariableNames', {'SP500'});
+        tt_twii = timetable(t_twii, market_data.TWII.Prices, 'VariableNames', {'TWII'});
+        
+        % 使用 synchronize 取交集，完美解決台灣與美國開休市日不同的問題
+        tt_aligned = synchronize(tt_sp500, tt_twii, 'intersection');
+        
+        % 使用花括號擴充 `{:, 'Var'}` 確保提取出純 numeric 矩陣，避免 table 屬性干擾後續計算
+        Y = [log(tt_aligned{:, 'SP500'}), log(tt_aligned{:, 'TWII'})];
         
         try
             % 執行約翰森檢定
             [~,~,~,~,mles] = jcitest(Y, 'Display', 'off');
+            
+            % 關鍵修正：兼容新舊版本 MATLAB 的 mles 返回格式 (相容 struct array 與 table)
+            if istable(mles)
+                if iscell(mles.EVec)
+                    cv_all = mles.EVec{2}; % 新版 Table 格式包在 Cell 內
+                else
+                    cv_all = mles{2, 'EVec'}; % 一般 Table 矩陣格式
+                end
+            else
+                cv_all = mles(2).EVec; % 舊版傳統結構陣列格式
+            end
+            
             % 提取第一組共整合向量 (Cointegrating Vector)
-            cv = mles(2).EVec(:,1);
+            cv = cv_all(:,1);
             % 正規化：以台股係數作為基準
             cv = cv / cv(2); 
             spread = Y * cv;
         catch ME
-            fprintf('約翰森檢定失敗，降級使用 OLS 回歸: %s\n', ME.message);
+            fprintf('約翰森檢定失敗，降級使用 OLS 回歸。錯誤訊息: %s\n', ME.message);
             c = cov(Y(:,1), Y(:,2));
             beta = c(1,2) / c(1,1);
             spread = Y(:,2) - beta * Y(:,1);
@@ -95,8 +120,6 @@ function Automated_Macro_Quant_System()
         z_score = (spread(end) - mean(spread)) / std(spread);
         
         % === 均值回歸機率計算 ===
-        % 利用常態分佈累積函數 (CDF) 將 Z-Score 轉化為發生極端偏差的「異常機率」，
-        % 偏差越極端，向均值回歸的力量與機率就越高。
         reversion_prob = (normcdf(abs(z_score)) - normcdf(-abs(z_score))) * 100;
         
         if z_score > 0
@@ -150,7 +173,7 @@ function Automated_Macro_Quant_System()
             market_data.Oil.Last, market_data.Oil.ChangePct, ...
             z_score, direction_str);
 
-        % 餵給 AI 的 Prompt (要求查詢新聞並分析 20日趨勢)
+        % 餵給 AI 的 Prompt
         prompt = sprintf([...
             '你是一位專業且具備宏觀避險基金視角的財經晨報編輯。請根據以下最新數據與近20日趨勢，產出一份「極簡、一分鐘完讀」的快訊版晨報，直接給結論。**請務必使用 Markdown 格式進行排版。**\n\n', ...
             '### 📊 各標的近 20 日價格走勢\n%s\n', ...
@@ -176,7 +199,7 @@ function Automated_Macro_Quant_System()
         fprintf('正在透過 Gmail 發送日報...\n');
         send_report_to_gmail(sender_email, sender_pwd, receiver_email, final_report);
         
-        fprintf('[%s] 系統全部執行完畢！\n', datestr(now));
+        fprintf('[%s] 系統全部執行完畢！\n', string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss')));
         
     catch ME
         fprintf('系統執行發生嚴重錯誤: %s\n', ME.message);
@@ -241,7 +264,14 @@ function report_text = call_gemini_api_with_rotation(prompt, api_keys)
         
         current_key = api_keys{currentKeyIdx}; 
         url = sprintf('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s', current_key); 
-        payload = struct('contents', struct('parts', struct('text', prompt))); 
+        
+        % 關鍵修正：使用雙大括號 {{ }} 確保 jsonencode 轉出符合官方標準的 [ ] Array 結構
+        payload = struct('contents', {{ ...
+            struct('parts', {{ ...
+                struct('text', prompt) ...
+            }}) ...
+        }});
+        
         options = weboptions('MediaType', 'application/json', 'Timeout', 45, 'RequestMethod', 'post'); 
         
         try
@@ -256,6 +286,7 @@ function report_text = call_gemini_api_with_rotation(prompt, api_keys)
         end
     end
 end
+
 % 3. 寄送 Gmail
 function send_report_to_gmail(sender_email, sender_pwd, receiver_email, report_text)
     if isempty(sender_email) || isempty(sender_pwd) || isempty(receiver_email)
@@ -274,7 +305,8 @@ function send_report_to_gmail(sender_email, sender_pwd, receiver_email, report_t
     props.setProperty('mail.smtp.port', '587');
     props.setProperty('mail.smtp.starttls.enable', 'true');
     
-    subject = sprintf('【量化總經快訊晨報】%s', datestr(today, 'yyyy-mm-dd'));
+    % 關鍵修正：採用現代 datetime 格式取代過時的 datestr
+    subject = "【量化總經快訊晨報】" + string(datetime('today', 'Format', 'yyyy-MM-dd'));
     
     try
         sendmail(receiver_email, subject, report_text);
